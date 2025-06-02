@@ -1,0 +1,43 @@
+# Load required libraries
+library(readxl)
+library(dplyr)
+
+# Download and read Excel file
+wb <- read_excel("~/Downloads/all(1).xlsx")
+
+# Remove dropped projects (those with status == "Dropped")
+wb <- wb %>% filter(tolower(status) != "dropped")
+
+# Clean and reformat board approval date (remove time and reformat in MM-DD-YYYY)
+wb$boardapprovaldate <- as.Date(sub("T.*", "", wb$boardapprovaldate))
+wb$boardapprovaldate <- format(wb$boardapprovaldate, "%m-%d-%Y")
+
+# Filter out rows with invalid or missing dates
+#wb <- wb %>% filter(!is.na(boardapprovaldate))
+
+# Add a year column (from cleaned date before reformatting)
+wb$year <- format(as.Date(wb$boardapprovaldate, format = "%m-%d-%Y"), "%Y")
+
+
+# Remove specified columns
+columns_to_remove <- c(
+  "status", "last_stage_reached_name", "project_name", "pdo", "impagency", 
+  "public_disclosure_date", "boardapprovaldate", "closingdate", "borrower", 
+  "lendinginstr", "envassesmentcategorycode", "esrc_ovrl_risk_rate", 
+  "supplementprojectflg", "loan_effective_date", "cons_serv_reqd_ind", "proj_last_upd_date", 
+  "curr_project_cost"
+)
+
+wb_cleaned <- wb %>% select(-all_of(columns_to_remove))
+
+# Remove rows with zero or missing IBRD & IDA & Grant commitments
+wb_cleaned <- wb_cleaned %>%
+  filter(!( (is.na(curr_ibrd_commitment) | curr_ibrd_commitment == 0) & 
+              (is.na(idacommamt) | idacommamt == 0) & 
+              (is.na(grantamt) | grantamt == 0) ))
+
+# Sort by year, then by country
+wb_sorted <- wb_cleaned %>% arrange(year, countryshortname)
+
+# View the first few rows
+head(wb_sorted)
