@@ -1,1 +1,35 @@
+# Load required libraries
+library(readxl)
+library(dplyr)
 
+# Download and read Excel file
+wb <- read_excel("~/Downloads/all(1).xlsx")
+
+# Remove dropped projects (those with status == "Dropped")
+wb <- wb %>% filter(tolower(status) != "dropped")
+
+# Clean board approval date (remove time and convert to Date)
+wb$boardapprovaldate_cleaned <- as.Date(sub("T.*", "", wb$boardapprovaldate))
+
+# Filter out rows with invalid or missing dates
+#wb <- wb %>% filter(!is.na(boardapprovaldate_cleaned))
+
+# Add a year column
+wb$year <- format(wb$boardapprovaldate_cleaned, "%Y")
+
+# Remove specified columns
+columns_to_remove <- c(
+  "status", "last_stage_reached_name", "project_name", "pdo", "impagency", 
+  "public_disclosure_date", "boardapprovaldate", "closingdate", "borrower", 
+  "lendinginstr", "envassesmentcategorycode", "esrc_ovrl_risk_rate", 
+  "supplementprojectflg", "cons_serv_reqd_ind", "proj_last_upd_date", 
+  "boardapprovaldate_cleaned"
+)
+
+wb_cleaned <- wb %>% select(-all_of(columns_to_remove))
+
+# Sort by year, then by country
+wb_sorted <- wb_cleaned %>% arrange(year, countryshortname)
+
+# View the first few rows
+head(wb_sorted)
