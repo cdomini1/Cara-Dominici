@@ -1,0 +1,78 @@
+
+# Load required libraries
+library(readxl)
+library(dplyr)
+
+# Read Excel file
+wb <- read_excel("~/Downloads/all(1).xlsx")
+
+# Remove dropped projects
+wb <- wb %>% filter(tolower(status) != "dropped")
+
+# Clean and reformat board approval date
+wb$boardapprovaldate <- as.Date(sub("T.*", "", wb$boardapprovaldate))
+wb$boardapprovaldate <- format(wb$boardapprovaldate, "%m-%d-%Y")
+
+# Add year column
+wb$year <- format(as.Date(wb$boardapprovaldate, format = "%m-%d-%Y"), "%Y")
+
+# Remove specified columns
+columns_to_remove <- c(
+  "status", "last_stage_reached_name", "project_name", "pdo", "impagency",
+  "public_disclosure_date", "boardapprovaldate", "closingdate", "borrower",
+  "lendinginstr", "envassesmentcategorycode", "esrc_ovrl_risk_rate",
+  "supplementprojectflg", "loan_effective_date", "cons_serv_reqd_ind", "proj_last_upd_date",
+  "curr_project_cost", "projectfinancialtype"
+)
+wb_cleaned <- wb %>% select(-all_of(columns_to_remove))
+
+# Convert commitment columns to numeric and clean NA-like values
+# Clean commitment columns safely
+wb_cleaned <- wb_cleaned %>%
+  mutate(
+    curr_total_commitment = as.numeric(case_when(
+      trimws(as.character(curr_total_commitment)) %in% c("", "NA", "na", "n/a") ~ NA_character_,
+      TRUE ~ as.character(curr_total_commitment)
+    )),
+    curr_ibrd_commitment = as.numeric(case_when(
+      trimws(as.character(curr_ibrd_commitment)) %in% c("", "NA", "na", "n/a") ~ NA_character_,
+      TRUE ~ as.character(curr_ibrd_commitment)
+    )),
+    idacommamt = as.numeric(case_when(
+      trimws(as.character(idacommamt)) %in% c("", "NA", "na", "n/a") ~ NA_character_,
+      TRUE ~ as.character(idacommamt)
+    )),
+    grantamt = as.numeric(case_when(
+      trimws(as.character(grantamt)) %in% c("", "NA", "na", "n/a") ~ NA_character_,
+      TRUE ~ as.character(grantamt)
+    ))
+  )
+
+
+# Remove rows where total commitment is 0 or NA
+wb_cleaned <- wb_cleaned %>%
+  filter(!is.na(curr_total_commitment) & curr_total_commitment != 0)
+
+# Sort by year and country
+wb_sorted <- wb_cleaned %>% arrange(year, countryshortname)
+
+# View cleaned and sorted data
+head(wb_sorted)
+
+# Create yearly summary with percentages
+yearly_summary <- wb_sorted %>%
+  group_by(year) %>%
+  summarise(
+    total_commitment = sum(curr_total_commitment, na.rm = TRUE),
+    total_ibrd = sum(curr_ibrd_commitment, na.rm = TRUE),
+    total_ida = sum(idacommamt, na.rm = TRUE),
+    total_grant = sum(grantamt, na.rm = TRUE)
+  ) %>%
+  mutate(
+    percent_ibrd = round(100 * total_ibrd / total_commitment, 2),
+    percent_ida = round(100 * total_ida / total_commitment, 2),
+    percent_grant = round(100 * total_grant / total_commitment, 2)
+  )
+
+# View the yearly percentage breakdown
+print(yearly_summary)
