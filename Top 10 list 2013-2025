@@ -1,0 +1,105 @@
+# Load required libraries
+library(readxl)
+library(dplyr)
+
+# Read Excel file
+wb <- read_excel("~/Downloads/all(1).xlsx")
+
+# Remove dropped projects
+wb <- wb %>% filter(tolower(status) != "dropped")
+
+# Clean and reformat board approval date
+wb$boardapprovaldate <- as.Date(sub("T.*", "", wb$boardapprovaldate))
+wb$boardapprovaldate <- format(wb$boardapprovaldate, "%m-%d-%Y")
+
+# Add year column
+wb$year <- format(as.Date(wb$boardapprovaldate, format = "%m-%d-%Y"), "%Y")
+
+# Remove unnecessary columns
+columns_to_remove <- c(
+  "status", "last_stage_reached_name", "project_name", "pdo", "impagency",
+  "public_disclosure_date", "boardapprovaldate", "closingdate", "borrower",
+  "lendinginstr", "envassesmentcategorycode", "esrc_ovrl_risk_rate",
+  "supplementprojectflg", "loan_effective_date", "cons_serv_reqd_ind", "proj_last_upd_date",
+  "curr_project_cost", "projectfinancialtype"
+)
+wb_cleaned <- wb %>% select(-all_of(columns_to_remove))
+
+# Convert relevant columns to numeric
+wb_cleaned <- wb_cleaned %>%
+  mutate(
+    curr_ibrd_commitment = as.numeric(case_when(
+      trimws(as.character(curr_ibrd_commitment)) %in% c("", "NA", "na", "n/a") ~ "0",
+      TRUE ~ as.character(curr_ibrd_commitment)
+    )),
+    idacommamt = as.numeric(case_when(
+      trimws(as.character(idacommamt)) %in% c("", "NA", "na", "n/a") ~ "0",
+      TRUE ~ as.character(idacommamt)
+    )),
+    grantamt = as.numeric(case_when(
+      trimws(as.character(grantamt)) %in% c("", "NA", "na", "n/a") ~ "0",
+      TRUE ~ as.character(grantamt)
+    ))
+  )
+
+# Redefine total commitment to exclude grants (IBRD + IDA only)
+wb_cleaned <- wb_cleaned %>%
+  mutate(
+    curr_total_commitment = curr_ibrd_commitment + idacommamt
+  ) %>%
+  select(-grantamt)  # Drop grantamt column
+
+# Remove rows with invalid or missing years or zero total commitment
+wb_cleaned <- wb_cleaned %>%
+  filter(!is.na(year) & tolower(year) != "n/a" & curr_total_commitment > 0)
+
+# Convert year to numeric for filtering and sorting
+wb_cleaned$year <- as.numeric(wb_cleaned$year)
+
+# Sort data
+wb_sorted <- wb_cleaned %>% arrange(year, countryshortname)
+
+# Country-year summary
+country_year_summary <- wb_sorted %>%
+  group_by(year, countryshortname) %>%
+  summarise(
+    total_commitment = sum(curr_total_commitment, na.rm = TRUE),
+    total_ibrd = sum(curr_ibrd_commitment, na.rm = TRUE),
+    total_ida = sum(idacommamt, na.rm = TRUE),
+    .groups = 'drop'
+  ) %>%
+  mutate(
+    percent_ibrd = round(100 * total_ibrd / total_commitment, 2),
+    percent_ida = round(100 * total_ida / total_commitment, 2)
+  )
+
+# Add yearly summary
+yearly_summary <- country_year_summary %>%
+  group_by(year) %>%
+  summarise(
+    year_total_commitment = sum(total_commitment, na.rm = TRUE),
+    .groups = 'drop'
+  ) %>%
+  arrange(year) %>%
+  mutate(
+    cumulative_commitment = if_else(
+      year >= 2010,
+      cumsum(if_else(year >= 2010, year_total_commitment, 0)),
+      0
+    )
+  )
+
+
+# Limit to years 2010–2023 & merge country-year data with cumulative total
+final_output
+final_output <- country_year_summary %>%
+  left_join(yearly_summary, by = "year") %>%
+  mutate(
+    country_share_of_year_total = round(100 * total_commitment / year_total_commitment, 2)
+  ) %>%
+  arrange(year, desc(country_share_of_year_total)) %>%
+  filter(year >= 2010 & year <= 2023)
+
+
+# View result
+print(final_output)
