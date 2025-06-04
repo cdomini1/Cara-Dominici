@@ -2,6 +2,9 @@
 library(readxl)
 library(dplyr)
 
+install.packages("writexl")
+library(writexl)
+
 # Read Excel file
 wb <- read_excel("~/Downloads/all(1).xlsx")
 
@@ -49,9 +52,17 @@ wb_cleaned <- wb_cleaned %>%
   ) %>%
   select(-grantamt)  # Drop grantamt column
 
-# Remove rows with invalid or missing years or zero total commitment
+# Remove rows where both IBRD and IDA commitments are zero, NA, or one is zero and the other NA
 wb_cleaned <- wb_cleaned %>%
-  filter(!is.na(year) & tolower(year) != "n/a" & curr_total_commitment > 0)
+  filter(
+    !is.na(year) & tolower(year) != "n/a" &
+      !(
+        (is.na(curr_ibrd_commitment) & is.na(idacommamt)) |
+          (curr_ibrd_commitment == 0 & idacommamt == 0) |
+          (curr_ibrd_commitment == 0 & is.na(idacommamt)) |
+          (is.na(curr_ibrd_commitment) & idacommamt == 0)
+      )
+  )
 
 # Convert year to numeric for filtering and sorting
 wb_cleaned$year <- as.numeric(wb_cleaned$year)
@@ -100,6 +111,29 @@ final_output <- country_year_summary %>%
   arrange(year, desc(country_share_of_year_total)) %>%
   filter(year >= 2010 & year <= 2023)
 
+filtered_data <- final_output %>% filter(year >= 2010 & year <= 2023)
 
-# View result
-print(final_output)
+# Step 1: Calculate total global commitments per year (sum over all countries)
+global_yearly_totals <- filtered_data %>%
+  group_by(year) %>%
+  summarise(global_yearly_commitment = sum(total_commitment, na.rm = TRUE), .groups = "drop")
+
+# Step 2: Sum all yearly global totals to get the overall global total for 2010-2023
+global_total_commitment <- sum(global_yearly_totals$global_yearly_commitment)
+
+# Step 3: Calculate total combined commitments per country over 2010-2023
+country_totals <- filtered_data %>%
+  group_by(countryshortname) %>%
+  summarise(country_total_commitment = sum(total_commitment, na.rm = TRUE), .groups = "drop")
+
+# Step 4: Calculate each country's % share of the global total and get top 10 countries
+top_10_countries <- country_totals %>%
+  mutate(percent_of_global_total = round(100 * country_total_commitment / global_total_commitment, 2)) %>%
+  arrange(desc(country_total_commitment)) %>%
+  slice_head(n = 10)
+
+# View the top 10 countries and their share of global commitments
+print(top_10_countries)
+
+
+write_xlsx(top_10_countries, path = "top_10_countries.xlsx")
