@@ -177,3 +177,135 @@ View(country_yearly_totals_filtered)
 install.packages("writexl")
 library(writexl)
 
+NEW AND IMPROVED PART 2:
+# Load required libraries
+library(readxl)
+library(dplyr)
+library(tidyr)
+
+# Download and read Excel file
+wb <- read_excel("~/Downloads/all(1).xlsx")
+
+# Remove dropped projects (those with status == "Dropped")
+wb <- wb %>% filter(tolower(status) != "dropped")
+
+# Assign years based on board approval or loan effective dates (board approval date takes priority)
+wb$boardapprovaldate <- as.Date(sub("T.*", "", wb$boardapprovaldate))
+wb$loan_effective_date <- as.Date(sub("T.*", "", wb$loan_effective_date))
+wb$closingdate <- as.Date(sub("T.*", "", wb$closingdate))
+
+wb$year <- ifelse(!is.na(wb$boardapprovaldate),
+                  as.numeric(format(wb$boardapprovaldate, "%Y")),
+           ifelse(!is.na(wb$loan_effective_date),
+                  as.numeric(format(wb$loan_effective_date, "%Y")),
+           ifelse(!is.na(wb$closingdate) & wb$closingdate < as.Date("2009-01-01"),
+                  2009,NA)))  # If none of the conditions are met, keep as NA
+
+# Remove rows with NA year (meaning they only had "last updated date" or missing all relevant dates)
+wb <- wb[!is.na(wb$year), ]
+
+# Remove specified columns
+columns_to_remove <- c(
+  "status", "last_stage_reached_name", "project_name", "pdo", "impagency", 
+  "public_disclosure_date", "boardapprovaldate", "closingdate", "borrower", 
+  "lendinginstr", "envassesmentcategorycode", "esrc_ovrl_risk_rate", 
+  "supplementprojectflg", "loan_effective_date", "cons_serv_reqd_ind", "proj_last_upd_date", 
+  "curr_project_cost", "projectfinancialtype"
+)
+wb_cleaned <- wb %>% select(-all_of(columns_to_remove))
+
+# Convert character "NA", "n/a", or "" to actual NA, then convert columns to numeric
+wb_cleaned <- wb_cleaned %>%
+  mutate(
+    curr_ibrd_commitment = as.numeric(na_if(trimws(as.character(curr_ibrd_commitment)), "")),
+    idacommamt = as.numeric(na_if(trimws(as.character(idacommamt)), "")),
+    grantamt = as.numeric(na_if(trimws(as.character(grantamt)), ""))
+  )
+
+# Remove rows where both IDA and IBRD commitments are zero or missing 
+wb_cleaned <- wb_cleaned %>%
+  filter(!((is.na(curr_ibrd_commitment) | curr_ibrd_commitment == 0) & 
+             (is.na(idacommamt) | idacommamt == 0)))
+
+# replace NAs with 0, if the total commitment amount adds up correctly
+wb_cleaned <- wb_cleaned %>%
+  # Apply row-wise logic
+  rowwise() %>%
+  mutate(
+    # Case 1: If curr_ibrd_commitment is NA, but idacommamt is a number
+    curr_ibrd_commitment = ifelse(
+      is.na(curr_ibrd_commitment) & !is.na(idacommamt) & (idacommamt + grantamt == curr_total_commitment),
+      0,
+      curr_ibrd_commitment
+    ),
+    # Case 2: If idacommamt is NA, but curr_ibrd_commitment is a number
+    idacommamt = ifelse(
+      is.na(idacommamt) & !is.na(curr_ibrd_commitment) & (curr_ibrd_commitment + grantamt == curr_total_commitment),
+      0,
+      idacommamt
+    ),
+    # Flag invalid rows that don't satisfy the total_commitment_amount condition
+    keep_row = case_when(
+      is.na(curr_ibrd_commitment) & !is.na(idacommamt) ~ idacommamt + grantamt == curr_total_commitment,
+      is.na(idacommamt) & !is.na(curr_ibrd_commitment) ~ curr_ibrd_commitment + grantamt == curr_total_commitment,
+      TRUE ~ TRUE  # Keep all other rows
+    )
+  ) %>%
+  # Keep only valid rows
+  filter(keep_row) %>%
+  # Remove the helper column
+  select(-keep_row) %>%
+  ungroup()
+
+# compute total commitment excluding grants 
+wb_cleaned <- wb_cleaned %>%
+  mutate(
+    curr_total_commitment = idacommamt + curr_ibrd_commitment
+  )
+
+# calculate yearly IDA, IBRD, and total commitments per country
+country_yearly_totals <- wb_cleaned %>%
+  group_by(countryshortname, year) %>%
+  summarise(
+    curr_ibrd_commitment = sum(curr_ibrd_commitment, na.rm = TRUE),
+    idacommamt = sum(idacommamt, na.rm = TRUE),
+    curr_total_commitment = sum(curr_total_commitment, na.rm = TRUE),
+  ) %>%
+  arrange(countryshortname, year)
+
+# get rid of the grant column
+wb_cleaned <- wb_cleaned %>% select(-grantamt)
+
+# create columns for t and t-1 cummulative IDA and IBRD totals
+country_yearly_totals <- country_yearly_totals %>%
+  group_by(countryshortname) %>%
+  arrange(year, .by_group = TRUE) %>%   # sort years within each country
+  mutate(
+    # 1) cumulative IBRD up to but not including that year
+    cum_ibrd_before_year = lag(cumsum(curr_ibrd_commitment), default = 0),
+    # 2) cumulative IDA up to but not including that year
+    cum_ida_before_year = lag(cumsum(idacommamt), default = 0),
+    # 3) cumulative IBRD including that year
+    cum_ibrd_including_year = cumsum(curr_ibrd_commitment),
+    # 4) cumulative IDA including that year
+    cum_ida_including_year = cumsum(idacommamt)
+  ) %>%
+  ungroup() %>%
+  arrange(countryshortname, year)
+
+# only display data from 2010-2023
+country_yearly_totals_filtered <- country_yearly_totals %>%
+  filter(year >= 2010, year <= 2023)
+
+# displaying final results
+View(country_yearly_totals_filtered)
+
+# creating the "key" for totals  
+
+
+# export file to excel 
+install.packages("writexl") # Only run this once
+library(writexl)
+
+write_xlsx(country_yearly_totals_filtered, "cummulatives_yearly_summaries.xlsx")
+
