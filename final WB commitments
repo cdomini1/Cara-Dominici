@@ -1,0 +1,248 @@
+# Load required libraries
+library(readxl)
+library(dplyr)
+library(writexl)
+library(ggplot2)
+
+# Read Excel file
+wb <- read_excel("~/Downloads/all(1).xlsx")
+
+# Remove dropped projects
+wb <- wb %>% filter(tolower(status) != "dropped")
+
+# Clean and reformat board approval date
+wb$boardapprovaldate <- as.Date(sub("T.*", "", wb$boardapprovaldate))
+wb$boardapprovaldate <- format(wb$boardapprovaldate, "%m-%d-%Y")
+
+# Add year column
+wb$year <- format(as.Date(wb$boardapprovaldate, format = "%m-%d-%Y"), "%Y")
+
+# Remove unnecessary columns
+columns_to_remove <- c(
+  "status", "last_stage_reached_name", "project_name", "pdo", "impagency",
+  "public_disclosure_date", "boardapprovaldate", "closingdate", "borrower",
+  "lendinginstr", "envassesmentcategorycode", "esrc_ovrl_risk_rate",
+  "supplementprojectflg", "loan_effective_date", "cons_serv_reqd_ind", "proj_last_upd_date",
+  "curr_project_cost", "projectfinancialtype"
+)
+wb_cleaned <- wb %>% select(-all_of(columns_to_remove))
+
+# Convert relevant columns to numeric
+wb_cleaned <- wb_cleaned %>%
+  mutate(
+    curr_ibrd_commitment = as.numeric(case_when(
+      trimws(as.character(curr_ibrd_commitment)) %in% c("", "NA", "na", "n/a") ~ "0",
+      TRUE ~ as.character(curr_ibrd_commitment)
+    )),
+    idacommamt = as.numeric(case_when(
+      trimws(as.character(idacommamt)) %in% c("", "NA", "na", "n/a") ~ "0",
+      TRUE ~ as.character(idacommamt)
+    )),
+    grantamt = as.numeric(case_when(
+      trimws(as.character(grantamt)) %in% c("", "NA", "na", "n/a") ~ "0",
+      TRUE ~ as.character(grantamt)
+    ))
+  )
+
+# Redefine total commitment to exclude grants (IBRD + IDA only)
+wb_cleaned <- wb_cleaned %>%
+  mutate(
+    curr_total_commitment = curr_ibrd_commitment + idacommamt
+  ) %>%
+  select(-grantamt)  # Drop grantamt column
+
+# Remove rows where both IBRD and IDA commitments are zero, NA, or one is zero and the other NA
+wb_cleaned <- wb_cleaned %>%
+  filter(
+    !is.na(year) & tolower(year) != "n/a" &
+      !(
+        (is.na(curr_ibrd_commitment) & is.na(idacommamt)) |
+          (curr_ibrd_commitment == 0 & idacommamt == 0) |
+          (curr_ibrd_commitment == 0 & is.na(idacommamt)) |
+          (is.na(curr_ibrd_commitment) & idacommamt == 0)
+      )
+  )
+
+# Convert year to numeric for filtering and sorting
+wb_cleaned$year <- as.numeric(wb_cleaned$year)
+
+# Sort data
+wb_sorted <- wb_cleaned %>% arrange(year, countryshortname)
+
+# Country-year summary
+country_year_summary <- wb_sorted %>%
+  group_by(year, countryshortname) %>%
+  summarise(
+    total_commitment = sum(curr_total_commitment, na.rm = TRUE),
+    total_ibrd = sum(curr_ibrd_commitment, na.rm = TRUE),
+    total_ida = sum(idacommamt, na.rm = TRUE),
+    .groups = 'drop'
+  ) %>%
+  mutate(
+    percent_ibrd = round(100 * total_ibrd / total_commitment, 2),
+    percent_ida = round(100 * total_ida / total_commitment, 2)
+  )
+
+# Add yearly summary
+yearly_summary <- country_year_summary %>%
+  group_by(year) %>%
+  summarise(
+    year_total_commitment = sum(total_commitment, na.rm = TRUE),
+    .groups = 'drop'
+  ) %>%
+  arrange(year) %>%
+  mutate(
+    cumulative_commitment = if_else(
+      year >= 2010,
+      cumsum(if_else(year >= 2010, year_total_commitment, 0)),
+      0
+    )
+  )
+
+
+# Limit to years 2010–2023 & merge country-year data with cumulative total
+final_output
+final_output <- country_year_summary %>%
+  left_join(yearly_summary, by = "year") %>%
+  mutate(
+    country_share_of_year_total = round(100 * total_commitment / year_total_commitment, 2)
+  ) %>%
+  arrange(year, desc(country_share_of_year_total)) %>%
+  filter(year >= 2010 & year <= 2023)
+
+filtered_data <- final_output %>% filter(year >= 2010 & year <= 2023)
+
+# Step 1: Calculate global totals for IBRD, IDA, and total commitments (2010-2023)
+global_totals <- filtered_data %>%
+  summarise(
+    global_ibrd_commitment = sum(total_ibrd, na.rm = TRUE),
+    global_ida_commitment = sum(total_ida, na.rm = TRUE),
+    global_total_commitment = sum(total_commitment, na.rm = TRUE)
+  )
+
+# Step 2: Calculate total commitments per country (2010-2023)
+country_totals <- filtered_data %>%
+  group_by(countryshortname) %>%
+  summarise(
+    total_ibrd_commitment = sum(total_ibrd, na.rm = TRUE),
+    total_ida_commitment = sum(total_ida, na.rm = TRUE),
+    total_commitment = sum(total_commitment, na.rm = TRUE),
+    .groups = 'drop'
+  )
+
+# Step 3: Calculate each country's % share of global commitments and get top 10 countries
+top_10_countries <- country_totals %>%
+  mutate(
+    percent_of_global_ibrd = round(100 * total_ibrd_commitment / global_totals$global_ibrd_commitment, 2),
+    percent_of_global_ida = round(100 * total_ida_commitment / global_totals$global_ida_commitment, 2),
+    percent_of_global_total = round(100 * total_commitment / global_totals$global_total_commitment, 2)
+  ) %>%
+  arrange(desc(total_commitment)) %>%
+  slice_head(n = 10)
+
+# View the top 10 countries and their share of global commitments
+View (top_10_countries)
+
+# =========================================
+# 🔥 INSERT THIS HERE 🔥
+# =========================================
+
+# Create a complete grid of top 10 countries and all years (2010-2023)
+all_years <- 2010:2023
+top_countries <- top_10_countries$countryshortname
+
+complete_grid <- expand.grid(
+  year = all_years,
+  countryshortname = top_countries
+)
+
+# Merge this grid with your final_output to fill in missing years
+top_10_yearly_full <- complete_grid %>%
+  left_join(final_output, by = c("year", "countryshortname")) %>%
+  mutate(
+    total_ibrd = ifelse(is.na(total_ibrd), 0, total_ibrd),
+    total_ida = ifelse(is.na(total_ida), 0, total_ida),
+    total_commitment = ifelse(is.na(total_commitment), 0, total_commitment),
+    year_total_commitment = ifelse(is.na(year_total_commitment), 0, year_total_commitment),
+    country_share_of_year_total = ifelse(year_total_commitment > 0, 
+                                         round(100 * total_commitment / year_total_commitment, 2), 
+                                         0)
+  ) %>%
+  arrange(countryshortname, year)
+
+View(top_10_yearly_full)
+
+# Export both summary tables to Excel
+write_xlsx(
+  list(
+    "Top 10 Countries Summary" = top_10_countries,
+    "Yearly Commitments (Top 10)" = top_10_yearly_full
+  ),
+  path = "World_Bank_Top_10_Countries_Details.xlsx"
+)
+
+# ====================
+# graph the data
+#-====================
+
+# Make sure year is treated as a factor to keep all years on x-axis
+complete_data$year <- as.factor(complete_data$year)
+
+# Create the stacked bar plot
+ggplot(complete_data, aes(x = year, y = country_share_of_year_total, fill = countryshortname)) +
+  geom_bar(stat = "identity", color = "black") +
+  labs(
+    title = "Share of Total World Bank Commitments (2010–2023)",
+    x = "",
+    y = "Share of Total WB Commitment (%)",
+    fill = "Country"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    legend.position = "right"
+  )
+
+
+fill_mapping <- c(
+  "China" = "black",
+  "Ukraine" = "grey20",
+  "Turkiye" = "grey40",
+  "Pakistan" = "grey60",
+  "Nigeria" = "grey80",
+  "Indonesia" = "black",
+  "India" = "grey20",
+  "Ethiopia" = "grey40",
+  "Brazil" = "grey60",
+  "Bangladesh" = "grey80"
+)
+
+# Make sure 'year' is a factor to preserve order
+complete_data$year <- as.factor(complete_data$year)
+
+# Plot
+ggplot(complete_data, aes(x = year, y = country_share_of_year_total, 
+                          pattern = countryshortname, fill = countryshortname)) +
+  geom_bar_pattern(
+    stat = "identity",
+    color = "black",
+    pattern_fill = "black",
+    pattern_color = "black",
+    pattern_density = 0.1,
+    pattern_spacing = 0.02,
+    pattern_angle = 45
+  ) +
+  scale_pattern_manual(values = pattern_mapping) +
+  scale_fill_manual(values = fill_mapping) +
+  labs(
+    title = "Share of Total World Bank Commitments (2010–2023)",
+    x = "",
+    y = "Share of Total WB Commitment (%)",
+    fill = "Country",
+    pattern = "Country"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    legend.position = "right"
+  )
